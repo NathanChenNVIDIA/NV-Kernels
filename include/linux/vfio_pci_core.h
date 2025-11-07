@@ -29,6 +29,7 @@ struct vfio_pci_core_device;
 struct vfio_pci_region;
 struct p2pdma_provider;
 struct dma_buf_phys_vec;
+struct dma_buf_attachment;
 struct vfio_pci_cxl_state;
 struct perm_bits;
 
@@ -235,6 +236,9 @@ VFIO_IOREAD_DECLARATION(32)
 #ifdef ioread64
 VFIO_IOREAD_DECLARATION(64)
 #endif
+
+int vfio_pci_dma_buf_iommufd_map(struct dma_buf_attachment *attachment,
+				 struct dma_buf_phys_vec *phys);
 
 static inline bool is_aligned_for_order(struct vm_area_struct *vma,
 					unsigned long addr,
