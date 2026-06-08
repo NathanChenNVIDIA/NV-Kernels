@@ -177,6 +177,10 @@ static const struct vfio_device_ops vfio_pci_ops = {
 	.pasid_detach_ioas	= vfio_iommufd_physical_pasid_detach_ioas,
 };
 
+static const struct vfio_pci_device_ops vfio_pci_dev_ops = {
+	.get_dmabuf_phys = vfio_pci_core_get_dmabuf_phys,
+};
+
 static int vfio_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 {
 	struct vfio_pci_core_device *vdev;
@@ -191,6 +195,7 @@ static int vfio_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		return PTR_ERR(vdev);
 
 	dev_set_drvdata(&pdev->dev, vdev);
+	vdev->pci_ops = &vfio_pci_dev_ops;
 #if IS_ENABLED(CONFIG_VFIO_CXL_CORE)
 	vdev->disable_cxl = disable_cxl;
 #endif
