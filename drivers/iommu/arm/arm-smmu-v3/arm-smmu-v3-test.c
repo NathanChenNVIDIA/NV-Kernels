@@ -420,6 +420,41 @@ static void arm_smmu_v3_write_ste_test_s2_to_s1(struct kunit *test)
 						       NUM_EXPECTED_SYNCS(3));
 }
 
+static void arm_smmu_test_ste_set_mpam(struct arm_smmu_ste *ste, u16 partid,
+				       u8 pmg)
+{
+	ste->data[4] |= cpu_to_le64(FIELD_PREP(STRTAB_STE_4_PARTID, partid));
+	ste->data[5] |= cpu_to_le64(FIELD_PREP(STRTAB_STE_5_PMG, pmg));
+}
+
+static void arm_smmu_v3_write_ste_test_s2_mpam_change(struct kunit *test)
+{
+	struct arm_smmu_ste ste;
+	struct arm_smmu_ste mpam_ste;
+
+	arm_smmu_test_make_s2_ste(&ste, ARM_SMMU_MASTER_TEST_ATS);
+	mpam_ste = ste;
+	arm_smmu_test_ste_set_mpam(&mpam_ste, 5, 1);
+	arm_smmu_v3_test_ste_expect_hitless_transition(test, &ste, &mpam_ste,
+						       NUM_EXPECTED_SYNCS(1));
+}
+
+static void
+arm_smmu_v3_write_ste_test_nested_s2_to_s1bypass_mpam(struct kunit *test)
+{
+	struct arm_smmu_ste s1_ste;
+	struct arm_smmu_ste s2_ste;
+
+	arm_smmu_test_make_cdtable_ste(
+		&s1_ste, STRTAB_STE_1_S1DSS_BYPASS, fake_cdtab_dma_addr,
+		ARM_SMMU_MASTER_TEST_ATS | ARM_SMMU_MASTER_TEST_NESTED);
+	arm_smmu_test_make_s2_ste(&s2_ste, 0);
+	arm_smmu_test_ste_set_mpam(&s1_ste, 5, 1);
+	arm_smmu_test_ste_set_mpam(&s2_ste, 5, 1);
+	arm_smmu_v3_test_ste_expect_hitless_transition(test, &s2_ste, &s1_ste,
+						       NUM_EXPECTED_SYNCS(2));
+}
+
 static void arm_smmu_v3_write_ste_test_non_hitless(struct kunit *test)
 {
 	struct arm_smmu_ste ste;
@@ -653,6 +688,8 @@ static struct kunit_case arm_smmu_v3_test_cases[] = {
 	KUNIT_CASE(arm_smmu_v3_write_ste_test_bypass_to_s2),
 	KUNIT_CASE(arm_smmu_v3_write_ste_test_s1_to_s2),
 	KUNIT_CASE(arm_smmu_v3_write_ste_test_s2_to_s1),
+	KUNIT_CASE(arm_smmu_v3_write_ste_test_s2_mpam_change),
+	KUNIT_CASE(arm_smmu_v3_write_ste_test_nested_s2_to_s1bypass_mpam),
 	KUNIT_CASE(arm_smmu_v3_write_ste_test_non_hitless),
 	KUNIT_CASE(arm_smmu_v3_write_cd_test_s1_clear),
 	KUNIT_CASE(arm_smmu_v3_write_cd_test_s1_change_asid),

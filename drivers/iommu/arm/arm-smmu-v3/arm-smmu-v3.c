@@ -1091,6 +1091,11 @@ void arm_smmu_get_ste_used(const __le64 *ent, __le64 *used_bits)
 
 	if (cfg == STRTAB_STE_0_CFG_BYPASS)
 		used_bits[1] |= cpu_to_le64(STRTAB_STE_1_SHCFG);
+
+	if (cfg != STRTAB_STE_0_CFG_ABORT) {
+		used_bits[4] |= cpu_to_le64(STRTAB_STE_4_PARTID);
+		used_bits[5] |= cpu_to_le64(STRTAB_STE_5_PMG);
+	}
 }
 EXPORT_SYMBOL_IF_KUNIT(arm_smmu_get_ste_used);
 
@@ -1134,6 +1139,14 @@ void arm_smmu_get_ste_update_safe(const __le64 *cur, const __le64 *target,
 	 *  fault records even when MEV == 0.
 	 */
 	safe_bits[1] |= cpu_to_le64(STRTAB_STE_1_MEV);
+
+	/*
+	 * PARTID and PMG only label transactions for MPAM. Briefly using a mix
+	 * of the old and new labels misattributes some traffic but cannot
+	 * affect translation, so relabelling does not need a breaking update.
+	 */
+	safe_bits[4] |= cpu_to_le64(STRTAB_STE_4_PARTID);
+	safe_bits[5] |= cpu_to_le64(STRTAB_STE_5_PMG);
 }
 EXPORT_SYMBOL_IF_KUNIT(arm_smmu_get_ste_update_safe);
 
@@ -1632,6 +1645,23 @@ static const struct arm_smmu_entry_writer_ops arm_smmu_ste_writer_ops = {
 	.get_update_safe = arm_smmu_get_ste_update_safe,
 };
 
+static void arm_smmu_ste_set_mpam(struct arm_smmu_master *master,
+				  struct arm_smmu_ste *ste)
+{
+	unsigned int cfg = FIELD_GET(STRTAB_STE_0_CFG, le64_to_cpu(ste->data[0]));
+
+	if (!(master->smmu->features & ARM_SMMU_FEAT_MPAM) ||
+	    !(ste->data[0] & cpu_to_le64(STRTAB_STE_0_V)) ||
+	    cfg == STRTAB_STE_0_CFG_ABORT)
+		return;
+
+	ste->data[4] &= ~cpu_to_le64(STRTAB_STE_4_PARTID);
+	ste->data[4] |= cpu_to_le64(FIELD_PREP(STRTAB_STE_4_PARTID,
+					       master->partid));
+	ste->data[5] &= ~cpu_to_le64(STRTAB_STE_5_PMG);
+	ste->data[5] |= cpu_to_le64(FIELD_PREP(STRTAB_STE_5_PMG, master->pmg));
+}
+
 static void arm_smmu_write_ste(struct arm_smmu_master *master, u32 sid,
 			       struct arm_smmu_ste *ste,
 			       const struct arm_smmu_ste *target)
@@ -1644,8 +1674,11 @@ static void arm_smmu_write_ste(struct arm_smmu_master *master, u32 sid,
 		},
 		.sid = sid,
 	};
+	struct arm_smmu_ste labelled = *target;
 
-	arm_smmu_write_entry(&ste_writer.writer, ste->data, target->data);
+	/* Every STE rebuild must carry the resctrl labels set for this master */
+	arm_smmu_ste_set_mpam(master, &labelled);
+	arm_smmu_write_entry(&ste_writer.writer, ste->data, labelled.data);
 
 	/* It's likely that we'll want to use the new STE soon */
 	if (!(smmu->options & ARM_SMMU_OPT_SKIP_PREFETCH)) {
@@ -3909,15 +3942,9 @@ static int arm_smmu_group_set_mpam(struct device *dev, u16 partid,
 	int i;
 	u32 sid;
 	struct arm_smmu_ste *step;
+	struct arm_smmu_ste target;
 	struct arm_smmu_device *smmu;
 	struct arm_smmu_master *master;
-	struct arm_smmu_cmdq_batch cmds;
-	struct arm_smmu_cmdq_ent cmd = {
-		.opcode	= CMDQ_OP_CFGI_STE,
-		.cfgi	= {
-			.leaf	= true,
-		},
-	};
 
 	master = dev_iommu_priv_get(dev);
 	if (!(master->smmu->features & ARM_SMMU_FEAT_MPAM))
@@ -3933,24 +3960,17 @@ static int arm_smmu_group_set_mpam(struct device *dev, u16 partid,
 	    dev->iommu->attach_deferred)
 		return -EBUSY;
 
-	arm_smmu_cmdq_batch_init(smmu, &cmds, &cmd);
+	master->partid = partid;
+	master->pmg = pmg;
 
 	for (i = 0; i < master->num_streams; i++) {
 		sid = master->streams[i].id;
 		step = arm_smmu_get_step_for_sid(smmu, sid);
 
-		/* These need locking if the VMSPtr is ever used */
-		step->data[4] = FIELD_PREP(STRTAB_STE_4_PARTID, partid);
-		step->data[5] = FIELD_PREP(STRTAB_STE_5_PMG, pmg);
-
-		cmd.cfgi.sid = sid;
-		arm_smmu_cmdq_batch_add(smmu, &cmds, &cmd);
+		/* Rewrite the live STE; arm_smmu_write_ste() applies the labels */
+		target = *step;
+		arm_smmu_write_ste(master, sid, step, &target);
 	}
-
-	master->partid = partid;
-	master->pmg = pmg;
-
-	arm_smmu_cmdq_batch_submit(smmu, &cmds);
 
 	return 0;
 }
